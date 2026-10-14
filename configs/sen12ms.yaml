@@ -1,0 +1,40 @@
+seed: 42
+device: cuda
+
+paths:
+  output_dir: ./experiments/segmentation
+  resume_checkpoint: null
+  validate_checkpoint: null
+
+data:
+  dataset: sen12ms
+  input_modalities: [s1, s2]  
+  image_size: 256
+  batch_size: 64
+  num_workers: 4
+  pin_memory: true
+  drop_last: false
+  normalize: true
+  clip_values: true
+  use_dfc_labels: true
+  ignore_index: 255
+  inference:
+    root_dir: /insert/path/to/DFC2020_or_SEN12MS  # 
+    # mode: sen12ms
+    observation_csv: null
+    used_data_fraction: 1.0
+model:
+  name: segformer
+  pretrained: true
+  num_classes: 10
+  input_channels: 15
+  segformer_name: nvidia/mit-b0
+  deeplab_encoder: resnet50
+  encoder_weights: imagenet
+
+training:
+  epochs: 50
+  learning_rate: 0.00006
+  weight_decay: 0.01
+  amp: true
+  save_every: 1
