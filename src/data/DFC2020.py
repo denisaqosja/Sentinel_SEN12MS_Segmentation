@@ -119,15 +119,40 @@ class DFC2020(Dataset_Base):
     def __init__(self, config, split="train", seed=42):
         super().__init__(config, split=split, seed=seed)
 
-        # transformations
-        self.tv_toTensor = lambda x: torch.from_numpy(x)
+        # Land-cover labels are invariant to orientation in these top-down patches.
+        # Use torch's RNG so set_seed() and DataLoader worker seeding apply.
+        self.augment = split == "train" and config["data"].get(
+            "augmentation", {}
+        ).get("enabled", True)
     
     def __getitem__(self, i):
         s2_tensor = torch.from_numpy(self.s2_samples[i])
         target = torch.from_numpy(self.gt_labels_samples[i]).long()
         
+        if self.augment:
+            s2_tensor, target = self.augment_pair(s2_tensor, target)
+
         return s2_tensor, target
-    
+
+    @staticmethod
+    def augment_pair(image, target):
+        """Sample exact rotations/reflections jointly, without resampling labels.
+
+        Square patches use all eight square symmetries with equal probability.
+        Rectangular patches use 0/180-degree rotations to preserve batch shapes.
+        No in-place operations: the cached dataset arrays remain unchanged.
+        """
+        square = image.shape[-2] == image.shape[-1]
+        k = int(torch.randint(4 if square else 2, ()).item())
+        if not square:
+            k *= 2
+        image = torch.rot90(image, k, dims=(-2, -1))
+        target = torch.rot90(target, k, dims=(-2, -1))
+        if torch.rand(()).item() < 0.5:
+            image = torch.flip(image, dims=(-1,))
+            target = torch.flip(target, dims=(-1,))
+        return image.contiguous(), target.contiguous()
+
     def __len__(self):
         return len(self.s2_samples)
 
