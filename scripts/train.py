@@ -16,6 +16,11 @@ from src.data.DFC2020 import DFC2020, S2_CLIP_THRESHOLD, S2_MEAN, S2_STD
 from src.data.dataloader import build_dataloaders
 from src.data.augmentations import mixup_batch, segmentation_mixup_loss
 from src.models.SegFormer import build_segformer
+from src.lib.metrics import (
+    compute_metrics,
+    metrics_from_confusion_matrix,
+    segmentation_confusion_matrix,
+)
 from src.models.DINO import build_dino
 
 
@@ -71,23 +76,6 @@ def log_frozen_parameters(tb_logger, model, step):
         tb_logger.add_scalar(f"parameters/{name}/frozen_percent", percentage, step)
 
 
-def compute_metrics(logits, targets, num_classes, ignore_index):
-    predictions = logits.argmax(dim=1)
-    valid = targets != ignore_index
-    correct = ((predictions == targets) & valid).sum().item()
-    total = valid.sum().item()
-    pixel_accuracy = correct / total if total else 0.0
-
-    ious = []
-    for class_index in range(num_classes):
-        pred_class = predictions == class_index
-        target_class = targets == class_index
-        intersection = (pred_class & target_class & valid).sum().item()
-        union = ((pred_class | target_class) & valid).sum().item()
-        if union > 0:
-            ious.append(intersection / union)
-    mean_iou = float(np.mean(ious)) if ious else 0.0
-    return pixel_accuracy, mean_iou
 
 def move_batch(batch, device):
     if torch.is_tensor(batch):
@@ -155,8 +143,7 @@ def log_reconstruction(tb_logger, tag, model, loader, device, step):
 def evaluate(model, loader, criterion, device, num_classes, ignore_index, desc="Validation"):
     model.eval()
     total_loss = 0.0
-    total_accuracy = 0.0
-    total_iou = 0.0
+    confusion = torch.zeros((num_classes, num_classes), dtype=torch.int64, device=device)
     num_batches = 0
 
     with tqdm(loader, desc=desc, unit="batch", dynamic_ncols=True) as progress:
@@ -165,26 +152,26 @@ def evaluate(model, loader, criterion, device, num_classes, ignore_index, desc="
             masks = batch[1].to(device, non_blocking=True)
             logits = model(images)
             loss = criterion(logits, masks)
-            accuracy, mean_iou = compute_metrics(logits, masks, num_classes, ignore_index)
+            confusion += segmentation_confusion_matrix(logits, masks, num_classes, ignore_index)
+            accuracy, mean_iou = metrics_from_confusion_matrix(confusion)
 
             total_loss += loss.item()
-            total_accuracy += accuracy
-            total_iou += mean_iou
             num_batches += 1
 
             progress.set_postfix(
                 loss=f"{total_loss / num_batches:.4f}",
-                pixel_acc=f"{total_accuracy / num_batches:.2%}",
-                mIoU=f"{total_iou / num_batches:.4f}",
+                pixel_acc=f"{accuracy:.2%}",
+                mIoU=f"{mean_iou:.4f}",
                 refresh=False,
             )
 
     if num_batches == 0:
         return {"loss": 0.0, "pixel_accuracy": 0.0, "mean_iou": 0.0}
+    accuracy, mean_iou = metrics_from_confusion_matrix(confusion)
     return {
         "loss": total_loss / num_batches,
-        "pixel_accuracy": total_accuracy / num_batches,
-        "mean_iou": total_iou / num_batches,
+        "pixel_accuracy": accuracy,
+        "mean_iou": mean_iou,
     }
 
 
