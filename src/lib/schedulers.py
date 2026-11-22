@@ -3,8 +3,7 @@ Implementation of learning rate schedulers, early stopping and other utils
 for improving optimization
 """
 
-from lib.logger import print_
-import models.model_utils as model_utils
+from src.lib.logger import print_
 
 
 class ExponentialLRSchedule:
@@ -84,18 +83,16 @@ class LRWarmUp:
         self.active = True
 
     def __call__(self, iter, epoch, optimizer):
-        """ Computing actual learning rate and updating optimizer """
-        if iter > self.warmup_steps or epoch >= self.max_epochs:
-            if self.active:
-                self.active = False
-                lr = self.init_lr
-                print_("Finished learning rate warmup period...")
+        if not self.active:
+            return
+        if self.warmup_steps <= 0 or iter >= self.warmup_steps or epoch >= self.max_epochs:
+            self.active = False
+            lr = self.init_lr
+            print_("Finished learning rate warmup period...")
         else:
             lr = self.init_lr * (iter / self.warmup_steps)
-            for params in optimizer.param_groups:
-                params["lr"] = lr
-
-        return
+        for parameters in optimizer.param_groups:
+            parameters["lr"] = lr
 
     def state_dict(self):
         """ State dictionary """
@@ -180,53 +177,75 @@ class EarlyStop:
 
 
 class Freezer:
-    """
-    Class for freezing/unfreezing the convolutional backbone of the model.
-    The fully connected classifier always remains unfrozen
+    """Manage encoder/decoder gradients and the modes of frozen modules.
 
-    Args:
-    -----
-    module: nn.Module
-        nn.Module to freeze or unfreeze
-    frozen_epochs: integer
-        Number of initial epochs in which the model is kept frozen
+    ``frozen_epochs=None`` applies the two freeze flags throughout training.
+    An integer overrides the encoder flag: freeze for epochs [0, frozen_epochs),
+    then unfreeze. Decoder freezing remains controlled independently.
+    The original classifier-model constructor arguments remain supported.
     """
 
-    def __init__(self, module, model_name, use_freezer, frozen_epochs=0):
-        """ Module initializer """
+    def __init__(self, module, model_name=None, use_freezer=True, frozen_epochs=None,
+                 *, freeze_encoder=False, freeze_decoder=False):
+        if frozen_epochs is not None and (isinstance(frozen_epochs, bool)
+                                          or not isinstance(frozen_epochs, int)
+                                          or frozen_epochs < 0):
+            raise ValueError("frozen_epochs must be a nonnegative integer or null")
         self.module = module
         self.model_name = model_name
         self.use_freezer = use_freezer
         self.frozen_epochs = frozen_epochs
-        self.is_frozen = False
+        if hasattr(module, "encoder") and hasattr(module, "decoder"):
+            self.encoder = module.encoder
+            self.decoder = module.decoder
+        else:
+            # Compatibility with the classification models used by older callers.
+            self.encoder = module
+            if "ResNet" in (model_name or "") or model_name == "ResNext":
+                self.decoder = module.fc
+            elif model_name == "EfficientNet" or "VGG" in (model_name or ""):
+                self.decoder = module.classifier[-1]
+            elif "ConvNext" in (model_name or ""):
+                self.decoder = module.head
+            else:
+                raise ValueError("Freezer requires encoder/decoder modules or a supported model_name")
+        self.set_freezing(freeze_encoder, freeze_decoder)
+        self(0)
+
+    @property
+    def is_frozen(self):
+        return self.freeze_encoder
+
+    def set_freezing(self, freeze_encoder=False, freeze_decoder=False):
+        if not isinstance(freeze_encoder, bool) or not isinstance(freeze_decoder, bool):
+            raise TypeError("freeze_encoder and freeze_decoder must be YAML booleans")
+        self.freeze_encoder = freeze_encoder
+        self.freeze_decoder = freeze_decoder
+        self.module.freeze_encoder = freeze_encoder
+        self.module.freeze_decoder = freeze_decoder
+        self.encoder.requires_grad_(not freeze_encoder)
+        self.decoder.requires_grad_(not freeze_decoder)
+        for part, frozen in ((self.encoder, freeze_encoder), (self.decoder, freeze_decoder)):
+            if frozen:
+                for parameter in part.parameters():
+                    parameter.grad = None
+        self.module.train(self.module.training)
+        self.enforce_training_mode()
+        return self
+
+    def enforce_training_mode(self):
+        training = self.module.training
+        if self.freeze_encoder:
+            self.encoder.eval()
+            if self.encoder is self.module:
+                # Older classifiers use the whole model as their encoder.
+                # Retain its requested mode while freezing the feature layers.
+                self.module.training = training
+        self.decoder.train(training and not self.freeze_decoder)
 
     def __call__(self, epoch):
-        """ """
-        if not self.use_freezer: 
-            return 
-
-        if epoch < self.frozen_epochs and self.is_frozen is False:
-            print_(f"  --> Still in frozen epochs  {epoch} < {self.frozen_epochs}. Freezing backbone...")
-            model_utils.freeze_params(self.module)
-            if "VGG" in self.model_name:
-                model_utils.unfreeze_params(self.module.classifier[-1])   # VGG has several linear layers as classifier
-            elif "ResNet" in self.model_name:
-                model_utils.unfreeze_params(self.module.fc)
-            elif self.model_name == "ResNext":
-                model_utils.unfreeze_params(self.module.fc)
-            elif self.model_name == "EfficientNet":
-                model_utils.unfreeze_params(self.module.classifier[-1])
-            elif "ConvNext" in self.model_name:
-                model_utils.unfreeze_params(self.module.head)
-            else:
-                raise NotImplementedError("Specify the model type in Freezer!")
-
-            self.is_frozen = True
-        elif epoch >= self.frozen_epochs and self.is_frozen is True:
-            print_(f"  --> Finished frozen epochs {epoch} = {self.frozen_epochs}. Unfreezing backbone...")
-            model_utils.unfreeze_params(self.module)
-            self.is_frozen = False
-       
-        return
-
-#
+        if self.use_freezer and self.frozen_epochs is not None:
+            frozen = epoch < self.frozen_epochs
+            if frozen != self.freeze_encoder:
+                self.set_freezing(frozen, self.freeze_decoder)
+        self.enforce_training_mode()
