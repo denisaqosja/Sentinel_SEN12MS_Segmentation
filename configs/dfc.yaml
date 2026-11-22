@@ -1,40 +1,75 @@
 seed: 42
 device: cuda
+exp_name: "dfc"
 
 paths:
-  output_dir: ./experiments/
-  resume_checkpoint: null
-  validate_checkpoint: null
+  logs: "logs"
+  loss: "loss"
+  results: "results"
+  checkpoint: "checkpoint"
+  tb_logger: "tensorboard_logs"
 
 data:
   dataset: dfc2020
   root_dir: ./Datasets/DFC_Public_Dataset/sensors
   input_modalities: [s2, dfc] # will use only s2 and dfc for training, no s1 will be used for now
   image_size: 256
-  batch_size: 128
-  val_batch_size: 64
-  num_workers: 4
+  batch_size: 16
+  val_batch_size: 4
+  num_workers: 0
+  preload: false  # Read patches on demand instead of keeping the full dataset in RAM.
   modality_mode: "single"  # "single" or "multi" modality mode.
   pin_memory: true
   drop_last: false
   ignore_index: 255
+  augmentation:
+    enabled: true  # Training only; spatial transforms also apply to masks.
+    crop_scale: [0.7, 1.0]  # Fraction of original patch area.
+    crop_ratio: [0.9, 1.1]
+    rotation_degrees: 30.0  # Uniform angle in [-30, 30]; exposed mask pixels ignored.
   train:
     used_data_fraction: 1.0
   val:
     used_data_fraction: 1.0
 
 model:
-  name: segformer  # add dino v3
+  name: segformer  # Override with --model segformer or --model dino.
   pretrained: true
+  freeze_encoder: true  # SegFormer encoder / DINO backbone.
+  freeze_decoder: false  # SegFormer decode head / DINO segmentation head.
   num_classes: 8
-  input_channels: 3   # for s2 using only RGB.
-  segformer_name: nvidia/mit-b0  # 
-  deeplab_encoder: resnet50
-  encoder_weights: imagenet
+  # Only the selected variant is applied; the effective config is saved per run.
+  variants:
+    segformer:
+      input_channels: 3
+      segformer_name: nvidia/segformer-b0-finetuned-ade-512-512
+      data:
+        input_modalities: ['s2', 'dfc']
+        preprocessing: standardize
+    dino:
+      input_channels: 3
+      dino_name: facebook/dinov3-vitl16-pretrain-sat493m
+      data:
+        input_modalities: [s2, 'dfc']
+        preprocessing: reflectance  # Divide by 10000; DINO normalizes internally.
+
 
 training:
-  epochs: 50
-  learning_rate: 0.00006
+  label_smoothing: 0.1  # Training loss only; validation uses ordinary cross-entropy.
+  mixup:
+    enabled: true
+    alpha: 0.2
+    probability: 0.5
+  n_epochs: 100
+  learning_rate: 0.0000 
   weight_decay: 0.01
+  scheduler: "plateau"
+  patience: 30
+  lr_factor: 0.5
   amp: true
-  save_every: 1
+  save_frequency: 5
+  resume_training: false
+  clip_grad_norm: 1.0
+  reconstruction_frequency: 5  # how often to log the reconstruction of validation results
+
+

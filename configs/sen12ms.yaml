@@ -1,5 +1,6 @@
 seed: 42
 device: cuda
+exp_name: "sen12ms"
 
 paths:
   output_dir: ./experiments/segmentation
@@ -11,30 +12,53 @@ data:
   input_modalities: [s1, s2]  
   image_size: 256
   batch_size: 64
-  num_workers: 4
+  num_workers: 0
   pin_memory: true
   drop_last: false
   normalize: true
   clip_values: true
   use_dfc_labels: true
   ignore_index: 255
+  augmentation:
+    enabled: true
+    crop_scale: [0.7, 1.0]
+    crop_ratio: [0.9, 1.1]
+    rotation_degrees: 30.0
   inference:
     root_dir: /insert/path/to/DFC2020_or_SEN12MS  # 
     # mode: sen12ms
     observation_csv: null
     used_data_fraction: 1.0
 model:
-  name: segformer
+  name: segformer  # Override with --model segformer or --model dino.
   pretrained: true
+  freeze_encoder: false  # SegFormer encoder / DINO backbone.
+  freeze_decoder: false  # SegFormer decode head / DINO segmentation head.
   num_classes: 10
-  input_channels: 15
-  segformer_name: nvidia/mit-b0
-  deeplab_encoder: resnet50
-  encoder_weights: imagenet
+  # Only the selected variant is applied; the effective config is saved per run.
+  variants:
+    segformer:
+      input_channels: 15
+      segformer_name: nvidia/mit-b0
+      data:
+        input_modalities: ['s1', 's2']
+        preprocessing: standardize
+    dino:
+      input_channels: 3
+      dino_name: facebook/dinov3-vitl16-pretrain-sat493m
+      data:
+        input_modalities: [s2]
+        preprocessing: reflectance  # Divide by 10000; DINO normalizes internally.
+
 
 training:
+  label_smoothing: 0.1  # Training loss only; validation uses ordinary cross-entropy.
+  mixup:
+    enabled: true
+    alpha: 0.2
+    probability: 0.5
   epochs: 50
-  learning_rate: 0.00006
+  learning_rate: 0.00001
   weight_decay: 0.01
   amp: true
   save_every: 1
