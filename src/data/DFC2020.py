@@ -36,10 +36,34 @@ class Dataset_Base(Dataset):
 
         data_path = os.path.join(config["data"]["root_dir"], split)
 
+        self.preprocessing = config["data"].get("preprocessing", "standardize")
+        if self.preprocessing not in ("standardize", "reflectance"):
+            raise ValueError("data.preprocessing must be standardize or reflectance")
+
         # load data
         input_modalities = config["data"].get("input_modalities", ["s2"])
         print(f"Using input modalities: {input_modalities}")
-        self.s2_samples, self.gt_labels_samples = self.load_tiff(data_path, input_modalities=input_modalities)
+        self.preload = config["data"].get("preload", True)
+        if self.preload:
+            self.s2_samples, self.gt_labels_samples = self.load_tiff(data_path, input_modalities=input_modalities)
+        else:
+            # Keep paths only; decode and normalize patches as batches request them.
+            self.s2_paths = self.patch_paths(data_path, "s2")
+            self.label_paths = self.patch_paths(data_path, "dfc")
+            image_ids = [os.path.basename(p).replace("_s2_", "_sensor_") for p in self.s2_paths]
+            label_ids = [os.path.basename(p).replace("_dfc_", "_sensor_") for p in self.label_paths]
+            if image_ids != label_ids:
+                raise ValueError("S2 and DFC patch filenames do not match")
+            print(f"{split}: reading {len(self.s2_paths)} patches on demand (preload=false)")
+
+    @staticmethod
+    def patch_paths(datapath, sensor_type):
+        sensor_path = os.path.join(datapath, sensor_type)
+        paths = [os.path.join(sensor_path, name) for name in sorted(os.listdir(sensor_path))
+                 if sensor_type in name and name.lower().endswith((".tif", ".tiff"))]
+        if not paths:
+            raise ValueError(f"No TIFF patches found in {sensor_path}")
+        return paths
 
     def resolve_datapath(self, datapath):
         if os.path.basename(os.path.normpath(datapath)) == "sensors":
@@ -91,10 +115,8 @@ class Dataset_Base(Dataset):
         s2 = s2.astype(np.float32, copy=False)
 
         # handle very bright areas. Set Threshold=3000 since it is the common value used for displaying S2 images
-    
         np.clip(s2, 0.0, S2_CLIP_THRESHOLD, out=s2)
-
-        # standardization (normalization)
+        # standardization
         s2 = (s2 - S2_MEAN) / S2_STD
 
         # (N, H, W, C) -> (N, C, H, W)
@@ -126,8 +148,16 @@ class DFC2020(Dataset_Base):
         ).get("enabled", True)
     
     def __getitem__(self, i):
-        s2_tensor = torch.from_numpy(self.s2_samples[i])
-        target = torch.from_numpy(self.gt_labels_samples[i]).long()
+        if self.preload:
+            image, mask = self.s2_samples[i], self.gt_labels_samples[i]
+        else:
+            image = tiff.imread(self.s2_paths[i])
+            if image.ndim != 3 or image.shape[-1] != 3:
+                raise ValueError(f"Expected S2 patch (H, W, 3), got {image.shape}: {self.s2_paths[i]}")
+            image = self.prepare_s2(image, report=False)
+            mask = self.prepare_labels(tiff.imread(self.label_paths[i]))
+        s2_tensor = torch.from_numpy(image)
+        target = torch.from_numpy(mask).long()
         
         if self.augment:
             s2_tensor, target = self.augment_pair(s2_tensor, target)
@@ -154,5 +184,5 @@ class DFC2020(Dataset_Base):
         return image.contiguous(), target.contiguous()
 
     def __len__(self):
-        return len(self.s2_samples)
+        return len(self.s2_samples) if self.preload else len(self.s2_paths)
 
