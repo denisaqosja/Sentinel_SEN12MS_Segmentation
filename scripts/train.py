@@ -12,6 +12,7 @@ from src.lib import setup_config
 from src.lib.config import load_training_config
 from src.lib.logger import Logger
 from src.lib.tensorboard import TensorboardWriter
+from src.data.DFC2020 import DFC2020, S2_CLIP_THRESHOLD, S2_MEAN, S2_STD
 from src.data.dataloader import build_dataloaders
 from src.data.augmentations import mixup_batch, segmentation_mixup_loss
 from src.models.SegFormer import build_segformer
@@ -98,17 +99,22 @@ def move_batch(batch, device):
     return batch
 
 def reconstruction_figure(s2_image, sample_pred, s2_target, n_items):
-    figure, axes = plt.subplots(n_items, 3, figsize=(10, 3 * n_items), squeeze=False)
+    # Undo DFC2020 standardization for display with the same stretch as the reports.
+    rgb = s2_image[:n_items].detach().float().cpu().permute(0, 2, 3, 1).numpy()
+    rgb = np.clip((rgb * S2_STD + S2_MEAN) / S2_CLIP_THRESHOLD, 0, 1)
+
+    figure, axes = plt.subplots(n_items, 3, figsize=(12, 3 * n_items + 0.5), squeeze=False)
     for row in range(n_items):
-        panels = ((s2_image[row, 0], "S2 image"), (s2_target[row], "target"), (sample_pred[row], "prediction"))
-        for col, (image, title) in enumerate(panels):
-            axis = axes[row, col]
-            mesh = axis.pcolor(image.numpy(), cmap="viridis", shading="auto")
-            figure.colorbar(mesh, ax=axis, fraction=0.046, pad=0.04)
-            axis.set_title(title)
-            axis.set_xticks([])
-            axis.set_yticks([])
-    figure.tight_layout()
+        axes[row, 0].imshow(rgb[row], interpolation="nearest")
+        axes[row, 1].imshow(DFC2020.colorize_mask(s2_target[row]), interpolation="nearest")
+        axes[row, 2].imshow(DFC2020.colorize_mask(sample_pred[row]), interpolation="nearest")
+    for axis, title in zip(axes[0], ("Sentinel-2 RGB", "Ground truth", "Prediction")):
+        axis.set_title(title)
+    for axis in axes.flat:
+        axis.set_axis_off()
+
+    DFC2020.add_mask_legend(figure, columns=1, loc="center right", bbox_to_anchor=(0.99, 0.5))
+    figure.tight_layout(rect=(0, 0, 0.82, 1))
     return figure
 
 @torch.no_grad()
