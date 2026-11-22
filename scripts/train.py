@@ -13,6 +13,7 @@ from src.lib.config import load_training_config
 from src.lib.logger import Logger
 from src.lib.tensorboard import TensorboardWriter
 from src.data.dataloader import build_dataloaders
+from src.data.augmentations import mixup_batch, segmentation_mixup_loss
 from src.models.SegFormer import build_segformer
 from src.models.DINO import build_dino
 
@@ -223,6 +224,14 @@ def main():
     print(f"Trainable parameters: {trainable_parameters:,} / {total_parameters:,}")
 
     train_config = config["training"]
+    mixup_config = train_config.get("mixup", {})
+    mixup_alpha = mixup_config.get("alpha", 0.2) if mixup_config.get("enabled", False) else 0.0
+    mixup_probability = mixup_config.get("probability", 0.5)
+    label_smoothing = train_config.get("label_smoothing", 0.0)
+    if mixup_alpha < 0 or not 0 <= mixup_probability <= 1:
+        raise ValueError("Mixup requires alpha >= 0 and probability in [0, 1]")
+    if not 0 <= label_smoothing <= 1:
+        raise ValueError("label_smoothing must be in [0, 1]")
     criterion = nn.CrossEntropyLoss(ignore_index=config["data"].get("ignore_index", 255))
     # initialize optimier and scheduler
     optimizer = torch.optim.AdamW(
@@ -274,10 +283,17 @@ def main():
                 images = batch[0].to(device, non_blocking=True)
                 masks = batch[1].to(device, non_blocking=True)
 
+                images, masks_a, masks_b, mix_weight = mixup_batch(
+                    images, masks, alpha=mixup_alpha, probability=mixup_probability
+                )
                 optimizer.zero_grad(set_to_none=True)
                 with torch.amp.autocast(device.type, enabled=use_amp):
                     logits = model(images)
-                    loss = criterion(logits, masks)
+                    loss = segmentation_mixup_loss(
+                        logits, masks_a, masks_b, mix_weight,
+                        ignore_index=config["data"].get("ignore_index", 255),
+                        label_smoothing=label_smoothing,
+                    )
 
                 scaler.scale(loss).backward()
                 # Clip actual gradients before updating weights.

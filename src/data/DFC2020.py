@@ -3,6 +3,7 @@ import tifffile as tiff
 import numpy as np    
 
 from torch.utils.data import Dataset
+from src.data.augmentations import augment_pair
 
 # statistics after clipping
 S2_MEAN = np.array(
@@ -110,7 +111,7 @@ class Dataset_Base(Dataset):
         return s2, labels   
 
 
-    def prepare_s2(self, s2):
+    def prepare_s2(self, s2, report=True):
         "S2 contains reflectance values from the sensor"
         s2 = s2.astype(np.float32, copy=False)
 
@@ -122,7 +123,8 @@ class Dataset_Base(Dataset):
         # (N, H, W, C) -> (N, C, H, W)
         s2 = np.moveaxis(s2, -1, 1) if s2.ndim == 4 else np.moveaxis(s2, -1, 0)
 
-        print(f"S2 data normalized: min = {s2.min():.4f}, max = {s2.max():.4f}")
+        if report:
+            print(f"S2 data normalized: min = {s2.min():.4f}, max = {s2.max():.4f}")
         return s2
 
     def prepare_labels(self, mask):
@@ -143,9 +145,18 @@ class DFC2020(Dataset_Base):
 
         # Land-cover labels are invariant to orientation in these top-down patches.
         # Use torch's RNG so set_seed() and DataLoader worker seeding apply.
-        self.augment = split == "train" and config["data"].get(
-            "augmentation", {}
-        ).get("enabled", True)
+        self.augmentation = config["data"].get("augmentation", {})
+        self.augment = split == "train" and self.augmentation.get("enabled", True)
+        self.ignore_index = config["data"].get("ignore_index", IGNORE_INDEX)
+        self.crop_scale = tuple(self.augmentation.get("crop_scale", [0.7, 1.0]))
+        self.crop_ratio = tuple(self.augmentation.get("crop_ratio", [0.9, 1.1]))
+        self.rotation_degrees = self.augmentation.get("rotation_degrees", 30.0)
+        if not (0 < self.crop_scale[0] <= self.crop_scale[1] <= 1):
+            raise ValueError("augmentation.crop_scale must satisfy 0 < min <= max <= 1")
+        if not (0 < self.crop_ratio[0] <= self.crop_ratio[1]):
+            raise ValueError("augmentation.crop_ratio must be positive and ordered")
+        if not 0 <= self.rotation_degrees <= 180:
+            raise ValueError("augmentation.rotation_degrees must be between 0 and 180")
     
     def __getitem__(self, i):
         if self.preload:
@@ -160,28 +171,12 @@ class DFC2020(Dataset_Base):
         target = torch.from_numpy(mask).long()
         
         if self.augment:
-            s2_tensor, target = self.augment_pair(s2_tensor, target)
+            s2_tensor, target = augment_pair(
+                s2_tensor, target, crop_scale=self.crop_scale, crop_ratio=self.crop_ratio,
+                rotation_degrees=self.rotation_degrees, ignore_index=self.ignore_index,
+            )
 
         return s2_tensor, target
-
-    @staticmethod
-    def augment_pair(image, target):
-        """Sample exact rotations/reflections jointly, without resampling labels.
-
-        Square patches use all eight square symmetries with equal probability.
-        Rectangular patches use 0/180-degree rotations to preserve batch shapes.
-        No in-place operations: the cached dataset arrays remain unchanged.
-        """
-        square = image.shape[-2] == image.shape[-1]
-        k = int(torch.randint(4 if square else 2, ()).item())
-        if not square:
-            k *= 2
-        image = torch.rot90(image, k, dims=(-2, -1))
-        target = torch.rot90(target, k, dims=(-2, -1))
-        if torch.rand(()).item() < 0.5:
-            image = torch.flip(image, dims=(-1,))
-            target = torch.flip(target, dims=(-1,))
-        return image.contiguous(), target.contiguous()
 
     def __len__(self):
         return len(self.s2_samples) if self.preload else len(self.s2_paths)
