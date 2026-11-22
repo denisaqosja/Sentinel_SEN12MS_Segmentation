@@ -32,6 +32,73 @@ RAW_TO_TRAIN = {
         }
 
 class Dataset_Base(Dataset):
+    # Keys are TRAINING IDs, not raw DFC IDs. WorldCover-inspired display only.
+    # Source: https://developers.google.com/earth-engine/datasets/catalog/ESA_WorldCover_v200
+    LABEL_MAP = {
+        0: {"raw_id": 1, "name": "Forest", "color": "#006400"},
+        1: {"raw_id": 2, "name": "Shrubland", "color": "#ffbb22"},
+        2: {"raw_id": 4, "name": "Grassland", "color": "#ffff4c"},
+        3: {"raw_id": 5, "name": "Wetlands", "color": "#0096a0"},
+        4: {"raw_id": 6, "name": "Croplands", "color": "#f096ff"},
+        5: {"raw_id": 7, "name": "Urban / built-up", "color": "#fa0000"},
+        6: {"raw_id": 9, "name": "Barren", "color": "#b4b4b4"},
+        7: {"raw_id": 10, "name": "Water", "color": "#0064c8"},
+        255: {"raw_id": None, "name": "Ignored / unmapped", "color": "#000000"},
+    }
+
+    @classmethod
+    def colorize_mask(cls, mask, raw=False):
+        """Return uint8 RGB for a raw DFC mask or a remapped training mask."""
+        if torch.is_tensor(mask):
+            mask = mask.detach().cpu().numpy()
+        mask = np.asarray(mask)
+        rgb = np.zeros((*mask.shape, 3), dtype=np.uint8)
+        for train_id, entry in cls.LABEL_MAP.items():
+            label_id = entry["raw_id"] if raw else train_id
+            if label_id is None:
+                continue
+            color = entry["color"].lstrip("#")
+            rgb[mask == label_id] = tuple(int(color[i:i+2], 16) for i in (0, 2, 4))
+        return rgb
+
+    @classmethod
+    def print_legend(cls):
+        lines = ["Training ID | Raw DFC ID | Class                 | Color"]
+        for train_id, entry in cls.LABEL_MAP.items():
+            raw = str(entry["raw_id"]) if entry["raw_id"] is not None else "other"
+            lines.append(f'{train_id:11} | {raw:10} | {entry["name"]:21} | {entry["color"]}')
+        legend = "\n".join(lines)
+        print(legend)
+        return legend
+
+    @classmethod
+    def add_mask_legend(cls, figure, columns=5, *, loc="lower center",
+                        bbox_to_anchor=(0.5, 0.015)):
+        """Add the shared class legend to a figure."""
+        from matplotlib.patches import Patch
+
+        handles = [
+            Patch(facecolor=entry["color"], edgecolor="#555555", label=entry["name"])
+            for entry in cls.LABEL_MAP.values()
+        ]
+        return figure.legend(handles=handles, loc=loc, ncol=columns,
+                             frameon=False, bbox_to_anchor=bbox_to_anchor)
+
+    @classmethod
+    def plot_legend(cls):
+        """Create a standalone legend without loading dataset files."""
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Patch
+        handles = [Patch(facecolor=entry["color"], edgecolor="#555555",
+                         label=f'{entry["name"]} — train {train_id}, raw {entry["raw_id"] if entry["raw_id"] is not None else "other"}')
+                   for train_id, entry in cls.LABEL_MAP.items()]
+        figure, axis = plt.subplots(figsize=(8, 5))
+        axis.axis("off")
+        axis.legend(handles=handles, loc="center", frameon=False, fontsize=12,
+                    title="DFC2020 land-cover legend (WorldCover-inspired)", title_fontsize=12)
+        figure.tight_layout()
+        return figure
+
     def __init__(self, config, split="train", seed=42):
         super().__init__()
 

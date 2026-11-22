@@ -145,24 +145,26 @@ The class percentages copied from the README below describe the reported validat
 
 **Top row:** original stored S2 RGB samples, displayed with the same fixed stretch `clip(RGB, 0, 3000) / 3000` (gamma = 1). **Bottom row:** the matching DFC ground-truth masks, not model predictions. Each column is one spatially aligned image/mask pair. The first two examples are from training and the last two from validation. Images are selected for class diversity among 16 evenly spaced filenames per region; they illustrate classes rather than represent dataset-wide prevalence. Patch identity and season appear above each column.
 
-The following palette matches the notebooks' `tab10` mapping for remapped training IDs 0–7. It is a display convention: water is gray here, for example; RGB colors in the top row are unrelated to the categorical mask colors. Ignored/unmapped labels are explicitly black in this figure.
+The shared palette is defined by `DFC2020.LABEL_MAP`. It adapts [ESA WorldCover colors](https://developers.google.com/earth-engine/datasets/catalog/ESA_WorldCover_v200) to the eight DFC classes; this is a display convention, not a change to class definitions or IDs. Forest is dark green, water blue, and wetlands teal. Croplands remain pink and built-up red to preserve established land-cover contrast.
+
+![DFC2020 class legend](../figures/dfc_label_legend.png)
 
 | Land cover | Raw DFC ID | Training ID | Mask color | Hex |
 |---|---:|---:|---|---|
-| Forest | 1 | 0 | Blue | `#1f77b4` |
-| Shrubland | 2 | 1 | Orange | `#ff7f0e` |
-| Grassland | 4 | 2 | Green | `#2ca02c` |
-| Wetlands | 5 | 3 | Red | `#d62728` |
-| Croplands | 6 | 4 | Purple | `#9467bd` |
-| Urban / built-up | 7 | 5 | Brown | `#8c564b` |
-| Barren | 9 | 6 | Pink | `#e377c2` |
-| Water | 10 | 7 | Gray | `#7f7f7f` |
-| Ignored / unmapped | Any other value | 255 | Black | `#000000` |
+| Forest | 1 | 0 | Dark green | `#006400` |
+| Shrubland | 2 | 1 | Amber | `#ffbb22` |
+| Grassland | 4 | 2 | Yellow | `#ffff4c` |
+| Wetlands | 5 | 3 | Teal | `#0096a0` |
+| Croplands | 6 | 4 | Pink | `#f096ff` |
+| Urban / built-up | 7 | 5 | Red | `#fa0000` |
+| Barren | 9 | 6 | Light gray | `#b4b4b4` |
+| Water | 10 | 7 | Blue | `#0064c8` |
+| Ignored / unmapped | Other | 255 | Black | `#000000` |
 
 The label remapping is defined in [`DFC2020.py`](../../src/data/DFC2020.py). Regenerate this figure from the repository root using the project environment:
 
 ```bash
-python resources/docs/generate_dfc_examples.py
+python -m resources.docs.generate_dfc_examples
 ```
 
 ## Reading the original analysis
