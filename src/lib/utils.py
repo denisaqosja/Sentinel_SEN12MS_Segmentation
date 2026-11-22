@@ -1,6 +1,7 @@
 import shutil
 import pickle
-import os, torch
+import os
+import torch
 import datetime
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,8 +21,7 @@ def create_directory(dir_path, dir_name=None):
     """
     if dir_name is not None:
         dir_path = os.path.join(dir_path, dir_name)
-    if not os.path.exists(dir_path):
-        os.makedirs(dir_path)
+    os.makedirs(dir_path, exist_ok=True)
     return
 
 
@@ -67,12 +67,14 @@ def save_pickle_file(path, data):
 
 def save_npy(path, filename, np_array, save_fig=False):
     array_filepath = os.path.join(path["results_tensors"], f"{filename}.npy")
-    with open(os.path.join(array_filepath, ".npy"), 'wb') as f:
+    with open(array_filepath, 'wb') as f:
         np.save(f, np_array)
 
     if save_fig:
-        plt.pcolor(np.squeeze(np_array[0]))
-        plt.savefig(os.path.join(path["results_images"], f"{filename}.png"))
+        figure, axis = plt.subplots()
+        axis.pcolor(np.squeeze(np_array[0]))
+        figure.savefig(os.path.join(path["results_images"], f"{filename}.png"))
+        plt.close(figure)
     return 
 
 
@@ -135,16 +137,16 @@ def log_module(module, exp_path, fname="model_architecture.txt", append=True):
 
 
 def set_device(x, device):
+    """Move tensors in nested batches while preserving metadata and containers."""
+    if torch.is_tensor(x):
+        return x.to(device)
     if isinstance(x, dict):
         for key, item in x.items():
-            if item is not None:
-                x[key] = item.to(device)
+            x[key] = set_device(item, device)
     elif isinstance(x, list):
-        for item in x:
-            if item is not None:
-                item = item.to(device)
-    else:
-        x = x.to(device)
+        x[:] = [set_device(item, device) for item in x]
+    elif isinstance(x, tuple):
+        return tuple(set_device(item, device) for item in x)
     return x
 
 

@@ -58,7 +58,7 @@ class TensorboardWriter:
         for key, val in dict.items():
             self.add_scalar(name=key, val=val, step=step)
 
-        plot_name = f"{dir}/{plot_name}" if dir is not None else key
+        plot_name = f"{dir}/{plot_name}" if dir is not None else plot_name
         self.add_scalars(plot_name=plot_name, val_names=dict.keys(), vals=dict.values(), step=step)
         return
 
@@ -96,15 +96,19 @@ class TensorboardWriter:
             images = torch.reshape(images, (num_im*b, c, w, h))
         elif len(images.shape) == 4:
             b, c, w, h = images.shape
-        figure, ax = plt.subplots(n_rows, n_cols)
+        figure, ax = plt.subplots(n_rows, n_cols, squeeze=False)
         figure.set_size_inches(3*n_cols, 3*n_rows)
         for i in range(n_rows):
             for j in range(n_cols):
-                a = ax[j] if n_rows==1 else ax[i, j]
+                a = ax[i, j]
                 a.set_xticks([])
                 a.set_yticks([])
                 a.grid(False)
-                img = images[i*j+j].permute(1, 2, 0) # .detach().cpu()
-                # a.imshow(img, cmap="gray", vmin=0, vmax=1)
+                index = i * n_cols + j
+                if index >= len(images):
+                    a.axis("off")
+                    continue
+                img = images[index].permute(1, 2, 0).detach().cpu()
                 a.imshow(img, cmap="gray")
         self.writer.add_figure(tag=tag, figure=figure, global_step=step)
+        plt.close(figure)

@@ -4,17 +4,13 @@ Setting up the model, optimizers, loss functions, loading/saving parameters, ...
 
 import os
 import traceback
+import warnings
 
-import timm
 import torch
-import torchvision
 
-from lib.logger import log_function, print_
-from lib.schedulers import LRWarmUp, ExponentialLRSchedule
-from lib.utils import create_directory
+from src.lib.logger import log_function, print_
+from src.lib.utils import create_directory
 
-from models import ConvNet, ConvNext, UNet
-from models.model_utils import split_model_parameters, replace_classifier_outsize
 
 
 MODELS = ["ConvNet", "UNet", "VGG", "ResNet", "ResNet50", "ResNext", "EfficientNet", "ConvNext", "ConvNext_nano", "ConvNext_pico"]
@@ -34,6 +30,9 @@ def setup_model(model_params):
     model: torch.nn.Module
         instanciated model given the parameters
     """
+    import torchvision
+    from .model_utils import replace_classifier_outsize
+
     model_name = model_params["model_name"]
     print(model_name)
     pretrained_flag = model_params["pretrained"]
@@ -41,6 +40,7 @@ def setup_model(model_params):
         raise NotImplementedError(f"Model '{model_name}' not in recognized models; {MODELS}")
     cur_model_params = model_params.get(model_name, {})
     if model_name == "ConvNet":
+        from . import ConvNet
         model = ConvNet(**cur_model_params)
     elif model_name == "VGG":
         model = torchvision.models.vgg16(pretrained=pretrained_flag)
@@ -58,11 +58,14 @@ def setup_model(model_params):
         model = torchvision.models.efficientnet_v2_s(pretrained=True)
         model = replace_classifier_outsize(model_name, model, cur_model_params["num_classes"])
     elif model_name == "ConvNext":
+        from . import ConvNext
         model = ConvNext(**cur_model_params)
     elif model_name == "ConvNext_nano":
+        import timm
         model = timm.create_model("convnext_nano", pretrained=True, num_classes=cur_model_params["num_classes"],
                                   drop_rate=0.1, drop_path_rate=0.0)
     elif model_name == "ConvNext_pico":
+        import timm
         model = timm.create_model("convnext_pico", pretrained=True, num_classes=cur_model_params["num_classes"],
                                   drop_rate=0.1, drop_path_rate=0.0)
     else:
@@ -88,14 +91,16 @@ def emergency_save(f):
             self_ = args[0]
             if hasattr(self_, "model") and hasattr(self_, "optimizer"):
                 fname = f"emergency_checkpoint_epoch_{self_.epoch}.pth"
+                create_directory(self_.exp_path, "models")
                 save_checkpoint(
+                    path=os.path.join(self_.exp_path, "models", fname),
                     model=self_.model,
                     optimizer=self_.optimizer,
-                    scheduler=self_.scheduler,
+                    scheduler=getattr(self_, "scheduler", None),
+                    scaler=getattr(self_, "scaler", None),
                     epoch=self_.epoch,
-                    exp_path=self_.exp_path,
-                    savedir="models",
-                    savename=fname
+                    best_mean_iou=getattr(self_, "best_mean_iou", 0.0),
+                    config=getattr(self_, "config", {}),
                 )
                 print_(f"  --> Saved emergency checkpoint {fname}")
             message = traceback.format_exc()
@@ -105,91 +110,44 @@ def emergency_save(f):
     return try_call_except
 
 
-@log_function
-def save_checkpoint(model, optimizer, scheduler, epoch, exp_path, finished=False, savedir="models", savename=None):
+def save_checkpoint(path, model, optimizer, scaler, epoch, best_mean_iou, config, scheduler=None):
+    """Save model, optimization state, and metadata at the end of an epoch."""
+    torch.save(
+        {
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
+            "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
+            "epoch": epoch,
+            "best_mean_iou": best_mean_iou,
+            "config": config,
+        },
+        path,
+    )
+
+
+def load_checkpoint(path, model, optimizer, scaler, device, scheduler=None):
+    """Restore training state and return the next epoch and best validation mIoU.
+
+    Older checkpoints may omit scaler/scheduler state and best-mIoU metadata.
     """
-    Saving a checkpoint in the models directory of the experiment. This checkpoint
-    contains state_dicts for the mode, optimizer and lr_scheduler
-    Args:
-    -----
-    model: torch Module
-        model to be saved to a .pth file
-    optimizer, scheduler: torch Optim
-        modules corresponding to the parameter optimizer and lr-scheduler
-    epoch: integer
-        current epoch number
-    exp_path: string
-        path to the root directory of the experiment
-    finished: boolean
-        if True, current checkpoint corresponds to the finally trained model
-    """
-
-    if savename is not None:
-        checkpoint_name = savename
-    elif savename is None and finished is True:
-        checkpoint_name = "checkpoint_epoch_final.pth"
-    else:
-        checkpoint_name = f"checkpoint_epoch_{epoch}.pth"
-
-    create_directory(exp_path, savedir)
-    savepath = os.path.join(exp_path, savedir, checkpoint_name)
-
-    scheduler_data = "" if scheduler is None else scheduler.state_dict()
-    torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            "scheduler_state_dict": scheduler_data
-            }, savepath)
-
-    return
-
-
-@log_function
-def load_checkpoint(checkpoint_path, model, only_model=False, map_cpu=False, **kwargs):
-    """
-    Loading a precomputed checkpoint: state_dicts for the mode, optimizer and lr_scheduler
-    Args:
-    -----
-    checkpoint_path: string
-        path to the .pth file containing the state dicts
-    model: torch Module
-        model for which the parameters are loaded
-    only_model: boolean
-        if True, only model state dictionary is loaded
-    """
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Checkpoint {checkpoint_path} does not exist ...")
-    if checkpoint_path is None:
-        return model
-
-    # loading model to either cpu or cpu
-    if map_cpu:
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    else:
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    # loading model parameters. Try catch is used to allow different dicts
-    try:
-        # our pretrained models
-        model.load_state_dict(checkpoint['model_state_dict'])
-    except Exception:
-        # pretrained model from imagenet
-        state_dict = checkpoint['model']
-        state_dict["head.weight"] = model.head.weight
-        state_dict["head.bias"] = model.head.bias
-        model.load_state_dict(state_dict)
-
-    # returning only model for transfer learning or returning also optimizer for resuming training
-    if only_model:
-        return model
-
-    optimizer, scheduler = kwargs["optimizer"], kwargs["scheduler"]
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    checkpoint = torch.load(path, map_location=device, weights_only=True)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    if scaler is not None and checkpoint.get("scaler_state_dict"):
+        scaler.load_state_dict(checkpoint["scaler_state_dict"])
     if scheduler is not None:
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    epoch = checkpoint["epoch"] + 1
-
-    return model, optimizer, scheduler, epoch
+        scheduler_state = checkpoint.get("scheduler_state_dict")
+        if isinstance(scheduler_state, dict):
+            scheduler.load_state_dict(scheduler_state)
+        else:
+            warnings.warn(
+                "Checkpoint has no scheduler state. The optimizer learning rate is restored, "
+                "but the scheduler restarts its history using the current configuration.",
+                UserWarning,
+                stacklevel=2,
+            )
+    return checkpoint.get("epoch", 0) + 1, checkpoint.get("best_mean_iou", 0.0)
 
 
 @log_function
@@ -210,6 +168,8 @@ def setup_optimization(exp_params, model):
     scheduler: Torch Optim object
         learning rate scheduler object used to decrease the lr after some epochs
     """
+    from .model_utils import split_model_parameters
+
     lr = exp_params["training"]["lr"]
     lr_backbone = exp_params["training"]["lr_backbone"]
 
@@ -278,6 +238,7 @@ def setup_scheduler(exp_params, optimizer):
                 step_size=patience
             )
     elif scheduler == "exponential":
+        from src.lib.schedulers import ExponentialLRSchedule
         print_("Setting up Exponential LR-Scheduler")
         print_(f"  --> Init LR: {lr}")
         print_(f"  --> Factor:  {lr_factor}")
@@ -348,6 +309,8 @@ def setup_lr_warmup(params):
         ...
         lr_warmup(iter=cur_iter, epoch=cur_epoch, optimizer=optimizer)  # updating lr
     """
+    from src.lib.schedulers import LRWarmUp
+
     use_warmup = params["lr_warmup"]
     lr = params["lr"]
     if use_warmup:

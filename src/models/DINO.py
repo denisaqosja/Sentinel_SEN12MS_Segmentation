@@ -2,11 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .freezing import EncoderDecoderFreezingMixing
+from src.lib.schedulers import Freezer
 
 from transformers import AutoConfig, AutoImageProcessor, AutoModel
 
-class DINO(EncoderDecoderFreezingMixing, nn.Module):
+class DINO(nn.Module):
     def __init__(
         self,
         model_name: str = "facebook/dinov3-vitl16-pretrain-sat493m",
@@ -16,6 +16,7 @@ class DINO(EncoderDecoderFreezingMixing, nn.Module):
         freeze_backbone: bool = False,
         freeze_encoder: bool | None = None,
         freeze_decoder: bool = False,
+        frozen_epochs: int | None = None,
     ):
         super().__init__()
 
@@ -46,10 +47,21 @@ class DINO(EncoderDecoderFreezingMixing, nn.Module):
         )
 
         # Keep the previous constructor argument as an encoder-freezing alias.
-        self.set_freezing(
-            freeze_backbone if freeze_encoder is None else freeze_encoder,
-            freeze_decoder,
+        self.freezer = Freezer(
+            self, frozen_epochs=frozen_epochs,
+            freeze_encoder=freeze_backbone if freeze_encoder is None else freeze_encoder,
+            freeze_decoder=freeze_decoder,
         )
+
+    def set_freezing(self, freeze_encoder=False, freeze_decoder=False):
+        self.freezer.set_freezing(freeze_encoder, freeze_decoder)
+        return self
+
+    def train(self, mode=True):
+        super().train(mode)
+        if hasattr(self, "freezer"):
+            self.freezer.enforce_training_mode()
+        return self
 
     @property
     def encoder(self):
@@ -126,6 +138,7 @@ def build_dino(config: dict) -> nn.Module:
 		pretrained=model_config.get("pretrained", True),
 		freeze_encoder=model_config.get("freeze_encoder", model_config.get("freeze_backbone", False)),
 		freeze_decoder=model_config.get("freeze_decoder", False),
+		frozen_epochs=model_config.get("frozen_epochs"),
 	)
 
 
